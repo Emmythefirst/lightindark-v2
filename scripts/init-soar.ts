@@ -35,7 +35,7 @@ async function main() {
   const { transaction: lbTx } = await client.addNewGameLeaderBoard(
     newGame,
     authority.publicKey,
-    "Season 1 Speedrun",
+    "Season 2 Speedrun",
     gameKeypair.publicKey,
     100,
     true

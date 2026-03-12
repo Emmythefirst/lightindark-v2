@@ -13,7 +13,7 @@ async function main() {
   const program = anchor.workspace.LightindarkV2 as Program<LightindarkV2>;
   const authority = provider.wallet.publicKey;
 
-  const SEASON_ID = 1;
+  const SEASON_ID = 2;
   const seasonIdBuffer = Buffer.alloc(4);
   seasonIdBuffer.writeUInt32LE(SEASON_ID);
 
