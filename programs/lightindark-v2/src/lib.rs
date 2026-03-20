@@ -324,6 +324,114 @@ pub mod lightindark_v2 {
         Ok(())
     }
 
+
+
+    // --------------------------------------------------------
+    //  ADMIN: Force-close a season with incompatible struct layout
+    //  Used when the account cannot be deserialized (old struct).
+    //  Returns lamports to authority.
+    // --------------------------------------------------------
+    pub fn force_close_season(ctx: Context<ForceCloseSeason>, _season_id: u32) -> Result<()> {
+        msg!("Force closing season account");
+        Ok(())
+    }
+
+    // --------------------------------------------------------
+    //  ADMIN: Close a season (devnet utility / emergency reset)
+    //  Closes both SeasonConfig and vault token account.
+    //  Returns lamports to authority.
+    // --------------------------------------------------------
+    pub fn close_season(ctx: Context<CloseSeason>, season_id: u32) -> Result<()> {
+        require!(
+            ctx.accounts.season_config.authority == ctx.accounts.authority.key(),
+            LightInDarkError::Unauthorized
+        );
+
+        // Close vault token account — transfer any remaining tokens back and reclaim rent
+        let season_id_bytes = season_id.to_le_bytes();
+        let vault_bump = ctx.bumps.vault;
+        let seeds = &[VAULT_SEED, season_id_bytes.as_ref(), &[vault_bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        // Transfer any remaining tokens back to authority token account
+        let vault_balance = ctx.accounts.vault.amount;
+        if vault_balance > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.vault.to_account_info(),
+                        to: ctx.accounts.authority_token_account.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                vault_balance,
+            )?;
+        }
+
+        // Close the vault token account
+        token::close_account(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::CloseAccount {
+                    account: ctx.accounts.vault.to_account_info(),
+                    destination: ctx.accounts.authority.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+        )?;
+
+        msg!("Season {} closed", ctx.accounts.season_config.season_id);
+        Ok(())
+    }
+
+
+    // --------------------------------------------------------
+    //  ADMIN: Close vault token account (devnet utility)
+    //  Used when SeasonConfig is already closed but vault remains.
+    // --------------------------------------------------------
+    pub fn close_vault(ctx: Context<CloseVault>, season_id: u32) -> Result<()> {
+        let season_id_bytes = season_id.to_le_bytes();
+        let vault_bump = ctx.bumps.vault;
+        let seeds = &[VAULT_SEED, season_id_bytes.as_ref(), &[vault_bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        // Transfer any remaining tokens to authority
+        let vault_balance = ctx.accounts.vault.amount;
+        if vault_balance > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.vault.to_account_info(),
+                        to: ctx.accounts.authority_token_account.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                vault_balance,
+            )?;
+        }
+
+        // Close vault and return rent to authority
+        token::close_account(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::CloseAccount {
+                    account: ctx.accounts.vault.to_account_info(),
+                    destination: ctx.accounts.authority.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+        )?;
+
+        msg!("Vault for season {} closed", season_id);
+        Ok(())
+    }
+
     // --------------------------------------------------------
     //  8. PERMISSIONLESS: Distribute season rewards
     //
@@ -568,6 +676,19 @@ pub struct InitializeSeason<'info> {
     )]
     pub season_config: Account<'info, SeasonConfig>,
 
+    // Vault token account initialized here so players can stake immediately
+    #[account(
+        init,
+        payer = authority,
+        token::mint = token_mint,
+        token::authority = vault,
+        seeds = [VAULT_SEED, &season_id.to_le_bytes()],
+        bump
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    pub token_mint: Account<'info, anchor_spl::token::Mint>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -725,13 +846,31 @@ pub struct AdminAction<'info> {
 
 #[derive(Accounts)]
 #[instruction(season_id: u32)]
-pub struct DistributeRewards<'info> {
-    // No authority required — anyone can call after season_end
+pub struct ForceCloseSeason<'info> {
     #[account(mut)]
-    pub caller: Signer<'info>,
+    pub authority: Signer<'info>,
+
+    /// CHECK: skip deserialization — account may have incompatible layout
+    #[account(
+        mut,
+        seeds = [SEASON_SEED, &season_id.to_le_bytes()],
+        bump,
+        owner = crate::ID,
+    )]
+    pub season_config: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(season_id: u32)]
+pub struct CloseSeason<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
 
     #[account(
         mut,
+        close = authority,
         seeds = [SEASON_SEED, &season_id.to_le_bytes()],
         bump = season_config.bump
     )]
@@ -744,6 +883,53 @@ pub struct DistributeRewards<'info> {
     )]
     pub vault: Account<'info, TokenAccount>,
 
+    #[account(mut)]
+    pub authority_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(season_id: u32)]
+pub struct CloseVault<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, &season_id.to_le_bytes()],
+        bump
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub authority_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(season_id: u32)]
+pub struct DistributeRewards<'info> {
+    // No authority required — anyone can call after season_end
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [SEASON_SEED, &season_id.to_le_bytes()],
+        bump = season_config.bump
+    )]
+    pub season_config: Box<Account<'info, SeasonConfig>>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, &season_id.to_le_bytes()],
+        bump
+    )]
+    pub vault: Box<Account<'info, TokenAccount>>,
+
     /// CHECK: token mint for burn instruction
     #[account(mut)]
     pub token_mint: UncheckedAccount<'info>,
@@ -754,21 +940,21 @@ pub struct DistributeRewards<'info> {
         constraint = winner1_token_account.owner == season_config.top_players[0]
             @ LightInDarkError::WrongWinnerAccount
     )]
-    pub winner1_token_account: Account<'info, TokenAccount>,
+    pub winner1_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         constraint = winner2_token_account.owner == season_config.top_players[1]
             @ LightInDarkError::WrongWinnerAccount
     )]
-    pub winner2_token_account: Account<'info, TokenAccount>,
+    pub winner2_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         constraint = winner3_token_account.owner == season_config.top_players[2]
             @ LightInDarkError::WrongWinnerAccount
     )]
-    pub winner3_token_account: Account<'info, TokenAccount>,
+    pub winner3_token_account: Box<Account<'info, TokenAccount>>,
 
     // Creator token account — validated against season_config.creator
     #[account(
@@ -776,7 +962,7 @@ pub struct DistributeRewards<'info> {
         constraint = creator_token_account.owner == season_config.creator
             @ LightInDarkError::WrongCreatorAccount
     )]
-    pub creator_token_account: Account<'info, TokenAccount>,
+    pub creator_token_account: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
 }

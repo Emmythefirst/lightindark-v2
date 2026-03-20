@@ -18,7 +18,7 @@ import {
 //    npx ts-node scripts/distribute-rewards.ts
 // ============================================================
 
-const SEASON_ID = 1;
+const SEASON_ID = 0;
 const LID_TOKEN_MINT = new PublicKey("3TX7tdXJLnJ51aBRR3TkVocnyFaiyNhETK3CQFp3E6bf");
 
 async function main() {

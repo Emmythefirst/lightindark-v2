@@ -8,7 +8,7 @@ const YOUR_LID_ACCOUNT = new PublicKey("5apeju9mVF1R6wZQwv2Kw1F3MFWBqwwue4qBaQah
 
 // Add test player wallets here
 const TEST_PLAYERS: string[] = [
-  // "PLAYER_WALLET_HERE",
+   "Ch3McJzQRuWCxPxjENz7vjLE5bDozfMy7ZC3KoeuvYCv",
 ];
 
 const AIRDROP_AMOUNT = 200 * 1_000_000; // 200 LID per player
